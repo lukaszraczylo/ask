@@ -14,6 +14,7 @@ import (
 var tokenMatcher = regexp.MustCompile("([^[]+)?(?:\\[(\\d+)])?")
 var mapType = reflect.TypeOf(map[string]interface{}{})
 var sliceType = reflect.TypeOf([]interface{}{})
+var splitCache = make(map[string][]string)
 
 // Answer holds result of call to For, use one of its methods to extract a value.
 type Answer struct {
@@ -22,46 +23,54 @@ type Answer struct {
 
 // For is used to select a path from source to return as answer.
 func For(source interface{}, path string) *Answer {
-
-	parts := strings.Split(path, ".")
+	parts, ok := splitCache[path]
+	if !ok {
+		parts = strings.Split(path, ".")
+		splitCache[path] = parts
+	}
 
 	current := source
 
 	for _, part := range parts {
-
 		match := tokenMatcher.FindStringSubmatch(strings.TrimSpace(part))
-
 		if len(match) == 3 {
-
 			if match[1] != "" {
-				val := reflect.ValueOf(current)
-				if val.IsValid() && val.CanConvert(mapType) {
-					current = val.Convert(mapType).Interface().(map[string]interface{})[match[1]]
-				} else {
+				current = accessMap(current, match[1])
+				if current == nil {
 					return &Answer{}
 				}
 			}
 
 			if match[2] != "" {
-				val := reflect.ValueOf(current)
-				if val.IsValid() && val.CanConvert(sliceType) {
-					s := val.Convert(sliceType).Interface().([]interface{})
-					index, _ := strconv.Atoi(match[2])
-					if index >= 0 && index < len(s) {
-						current = s[index]
-					} else {
-						return &Answer{}
-					}
-				} else {
+				current = accessSlice(current, match[2])
+				if current == nil {
 					return &Answer{}
 				}
 			}
-
 		}
-
 	}
 
 	return &Answer{value: current}
+}
+
+func accessMap(source interface{}, key string) interface{} {
+	val := reflect.ValueOf(source)
+	if val.IsValid() && val.Type().ConvertibleTo(mapType) {
+		return val.Convert(mapType).Interface().(map[string]interface{})[key]
+	}
+	return nil
+}
+
+func accessSlice(source interface{}, indexStr string) interface{} {
+	val := reflect.ValueOf(source)
+	if val.IsValid() && val.Type().ConvertibleTo(sliceType) {
+		s := val.Convert(sliceType).Interface().([]interface{})
+		index, _ := strconv.Atoi(indexStr)
+		if index >= 0 && index < len(s) {
+			return s[index]
+		}
+	}
+	return nil
 }
 
 // Path does the same thing as For but uses existing answer as source.
@@ -128,17 +137,37 @@ func (a *Answer) Bool(d bool) (bool, bool) {
 // If not successful the first return value will be set to the d parameter.
 func (a *Answer) Int(d int64) (int64, bool) {
 	switch vt := a.value.(type) {
-	case int, int8, int16, int32, int64:
-		return reflect.ValueOf(vt).Int(), true
-	case uint, uint8, uint16, uint32, uint64:
-		val := reflect.ValueOf(vt).Uint()
-		if val <= math.MaxInt64 {
-			return int64(val), true
+	case int:
+		return int64(vt), true
+	case int8:
+		return int64(vt), true
+	case int16:
+		return int64(vt), true
+	case int32:
+		return int64(vt), true
+	case int64:
+		return vt, true
+	case uint:
+		if vt <= uint(math.MaxInt64) {
+			return int64(vt), true
 		}
-	case float32, float64:
-		val := reflect.ValueOf(vt).Float()
-		if val >= 0 && val <= math.MaxInt64 {
-			return int64(val), true
+	case uint8:
+		return int64(vt), true
+	case uint16:
+		return int64(vt), true
+	case uint32:
+		return int64(vt), true
+	case uint64:
+		if vt <= uint64(math.MaxInt64) {
+			return int64(vt), true
+		}
+	case float32:
+		if vt >= 0 && vt <= float32(math.MaxInt64) {
+			return int64(vt), true
+		}
+	case float64:
+		if vt >= 0 && vt <= float64(math.MaxInt64) {
+			return int64(vt), true
 		}
 	}
 	return d, false
@@ -149,17 +178,43 @@ func (a *Answer) Int(d int64) (int64, bool) {
 // If not successful the first return value will be set to the d parameter.
 func (a *Answer) Uint(d uint64) (uint64, bool) {
 	switch vt := a.value.(type) {
-	case int, int8, int16, int32, int64:
-		val := reflect.ValueOf(vt).Int()
-		if val >= 0 {
-			return uint64(val), true
+	case int:
+		if vt >= 0 {
+			return uint64(vt), true
 		}
-	case uint, uint8, uint16, uint32, uint64:
-		return reflect.ValueOf(vt).Uint(), true
-	case float32, float64:
-		val := reflect.ValueOf(vt).Float()
-		if val >= 0 && val <= math.MaxUint64 {
-			return uint64(val), true
+	case int8:
+		if vt >= 0 {
+			return uint64(vt), true
+		}
+	case int16:
+		if vt >= 0 {
+			return uint64(vt), true
+		}
+	case int32:
+		if vt >= 0 {
+			return uint64(vt), true
+		}
+	case int64:
+		if vt >= 0 {
+			return uint64(vt), true
+		}
+	case uint:
+		return uint64(vt), true
+	case uint8:
+		return uint64(vt), true
+	case uint16:
+		return uint64(vt), true
+	case uint32:
+		return uint64(vt), true
+	case uint64:
+		return vt, true
+	case float32:
+		if vt >= 0 && vt <= float32(math.MaxUint64) {
+			return uint64(vt), true
+		}
+	case float64:
+		if vt >= 0 && vt <= float64(math.MaxUint64) {
+			return uint64(vt), true
 		}
 	}
 	return d, false
@@ -170,10 +225,26 @@ func (a *Answer) Uint(d uint64) (uint64, bool) {
 // If not successful the first return value will be set to the d parameter.
 func (a *Answer) Float(d float64) (float64, bool) {
 	switch vt := a.value.(type) {
-	case int, int8, int16, int32, int64:
-		return float64(reflect.ValueOf(vt).Int()), true
-	case uint, uint8, uint16, uint32, uint64:
-		return float64(reflect.ValueOf(vt).Uint()), true
+	case int:
+		return float64(vt), true
+	case int8:
+		return float64(vt), true
+	case int16:
+		return float64(vt), true
+	case int32:
+		return float64(vt), true
+	case int64:
+		return float64(vt), true
+	case uint:
+		return float64(vt), true
+	case uint8:
+		return float64(vt), true
+	case uint16:
+		return float64(vt), true
+	case uint32:
+		return float64(vt), true
+	case uint64:
+		return float64(vt), true
 	case float32:
 		return float64(vt), true
 	case float64:
