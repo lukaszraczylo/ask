@@ -1,3 +1,3 @@
-module github.com/simonnilsson/ask
+module github.com/lukaszraczylo/ask
 
-go 1.17
+go 1.20

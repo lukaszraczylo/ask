@@ -12,6 +12,7 @@ func TestFor(t *testing.T) {
 		"a": []interface{}{
 			map[string]interface{}{
 				"b": 100,
+				"c": -1031337,
 			},
 		},
 	}
@@ -20,6 +21,12 @@ func TestFor(t *testing.T) {
 	answer := For(source, "a[0].b")
 	if answer.value != 100 {
 		t.Errorf(`For() = (%v); want (100)`, answer.value)
+	}
+
+	// Answer should be negative number
+	answer = For(source, "a[0].c")
+	if answer.value != -1031337 {
+		t.Errorf(`For() = (%v); want (-1031337)`, answer.value)
 	}
 
 	// Missing
@@ -143,7 +150,7 @@ func TestInt(t *testing.T) {
 
 	source := map[string]interface{}{
 		"positive": 100,
-		"negative": -100,
+		"negative": -1001587205010,
 		"unsigned": uint(100),
 		"float":    float64(100),
 		"toobig":   uint64(math.MaxUint64),
@@ -158,8 +165,8 @@ func TestInt(t *testing.T) {
 
 	// OK negative
 	res, ok = For(source, "negative").Int(5)
-	if !ok || res != -100 {
-		t.Errorf("Int() = (%d, %t); want (-100, true)", res, ok)
+	if !ok || res != -1001587205010 {
+		t.Errorf("Int() = (%d, %t); want (-1001587205010, true)", res, ok)
 	}
 
 	// OK unsigned

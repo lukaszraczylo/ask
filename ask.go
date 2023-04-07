@@ -162,11 +162,11 @@ func (a *Answer) Int(d int64) (int64, bool) {
 			return int64(vt), true
 		}
 	case float32:
-		if vt >= 0 && vt <= float32(math.MaxInt64) {
+		if vt >= float32(math.MinInt64) && vt <= float32(math.MaxInt64) {
 			return int64(vt), true
 		}
 	case float64:
-		if vt >= 0 && vt <= float64(math.MaxInt64) {
+		if vt >= float64(math.MinInt64) && vt <= float64(math.MaxInt64) {
 			return int64(vt), true
 		}
 	}
@@ -209,11 +209,17 @@ func (a *Answer) Uint(d uint64) (uint64, bool) {
 	case uint64:
 		return vt, true
 	case float32:
-		if vt >= 0 && vt <= float32(math.MaxUint64) {
+		if vt >= 0 {
+			if vt > float32(math.MaxUint64) {
+				return math.MaxUint64, true
+			}
 			return uint64(vt), true
 		}
 	case float64:
-		if vt >= 0 && vt <= float64(math.MaxUint64) {
+		if vt >= 0 {
+			if vt > float64(math.MaxUint64) {
+				return math.MaxUint64, true
+			}
 			return uint64(vt), true
 		}
 	}
