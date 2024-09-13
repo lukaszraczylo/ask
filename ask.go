@@ -4,17 +4,12 @@
 package ask
 
 import (
-	"math"
 	"reflect"
-	"regexp"
 	"strconv"
-	"strings"
+	"sync"
 )
 
-var tokenMatcher = regexp.MustCompile("([^[]+)?(?:\\[(\\d+)])?")
-var mapType = reflect.TypeOf(map[string]interface{}{})
-var sliceType = reflect.TypeOf([]interface{}{})
-var splitCache = make(map[string][]string)
+var splitCache sync.Map // concurrent-safe map
 
 // Answer holds result of call to For, use one of its methods to extract a value.
 type Answer struct {
@@ -23,30 +18,25 @@ type Answer struct {
 
 // For is used to select a path from source to return as answer.
 func For(source interface{}, path string) *Answer {
-	parts, ok := splitCache[path]
-	if !ok {
-		parts = strings.Split(path, ".")
-		splitCache[path] = parts
+	partsInterface, ok := splitCache.Load(path)
+	var parts []string
+	if ok {
+		parts = partsInterface.([]string)
+	} else {
+		parts = tokenizePath(path)
+		splitCache.Store(path, parts)
 	}
 
 	current := source
 
-	for _, part := range parts {
-		match := tokenMatcher.FindStringSubmatch(strings.TrimSpace(part))
-		if len(match) == 3 {
-			if match[1] != "" {
-				current = accessMap(current, match[1])
-				if current == nil {
-					return &Answer{}
-				}
-			}
-
-			if match[2] != "" {
-				current = accessSlice(current, match[2])
-				if current == nil {
-					return &Answer{}
-				}
-			}
+	for _, token := range parts {
+		if index, err := strconv.Atoi(token); err == nil {
+			current = accessSlice(current, index)
+		} else {
+			current = accessMap(current, token)
+		}
+		if current == nil {
+			return &Answer{}
 		}
 	}
 
@@ -54,20 +44,50 @@ func For(source interface{}, path string) *Answer {
 }
 
 func accessMap(source interface{}, key string) interface{} {
-	val := reflect.ValueOf(source)
-	if val.IsValid() && val.Type().ConvertibleTo(mapType) {
-		return val.Convert(mapType).Interface().(map[string]interface{})[key]
+	switch m := source.(type) {
+	case map[string]interface{}:
+		return m[key]
+	case map[interface{}]interface{}:
+		return m[key]
+	case map[string]string:
+		return m[key]
+	case map[string]int:
+		return m[key]
+	// Add more cases as needed
+	default:
+		// Use reflect as last resort
+		val := reflect.ValueOf(source)
+		if val.Kind() == reflect.Map {
+			keyVal := reflect.ValueOf(key)
+			valueVal := val.MapIndex(keyVal)
+			if valueVal.IsValid() {
+				return valueVal.Interface()
+			}
+		}
 	}
 	return nil
 }
 
-func accessSlice(source interface{}, indexStr string) interface{} {
-	val := reflect.ValueOf(source)
-	if val.IsValid() && val.Type().ConvertibleTo(sliceType) {
-		s := val.Convert(sliceType).Interface().([]interface{})
-		index, _ := strconv.Atoi(indexStr)
+func accessSlice(source interface{}, index int) interface{} {
+	switch s := source.(type) {
+	case []interface{}:
 		if index >= 0 && index < len(s) {
 			return s[index]
+		}
+	case []int:
+		if index >= 0 && index < len(s) {
+			return s[index]
+		}
+	case [][]int:
+		if index >= 0 && index < len(s) {
+			return s[index]
+		}
+	default:
+		val := reflect.ValueOf(source)
+		if val.Kind() == reflect.Slice || val.Kind() == reflect.Array {
+			if index >= 0 && index < val.Len() {
+				return val.Index(index).Interface()
+			}
 		}
 	}
 	return nil
@@ -88,173 +108,295 @@ func (a *Answer) Value() interface{} {
 	return a.value
 }
 
-// Slice attempts asserting answer as a []interface{}.
+// String attempts to retrieve the answer as a string.
 // The first return value is the result, and the second indicates if the operation was successful.
-// If not successful the first return value will be set to the d parameter.
-func (a *Answer) Slice(d []interface{}) ([]interface{}, bool) {
-	val := reflect.ValueOf(a.value)
-	if val.IsValid() && val.CanConvert(sliceType) {
-		return val.Convert(sliceType).Interface().([]interface{}), true
+// If not successful, the first return value will be set to the default value provided.
+func (a *Answer) String(def string) (string, bool) {
+	if a.value == nil {
+		return def, false
 	}
-	return d, false
+	if res, ok := a.value.(string); ok {
+		return res, true
+	}
+	return def, false
 }
 
-// Map attempts asserting answer as a map[string]interface{}.
+// Bool attempts to retrieve the answer as a bool.
 // The first return value is the result, and the second indicates if the operation was successful.
-// If not successful the first return value will be set to the d parameter.
-func (a *Answer) Map(d map[string]interface{}) (map[string]interface{}, bool) {
-	val := reflect.ValueOf(a.value)
-	if val.IsValid() && val.CanConvert(mapType) {
-		return val.Convert(mapType).Interface().(map[string]interface{}), true
+// If not successful, the first return value will be set to the default value provided.
+func (a *Answer) Bool(def bool) (bool, bool) {
+	if a.value == nil {
+		return def, false
 	}
-	return d, false
+	if res, ok := a.value.(bool); ok {
+		return res, true
+	}
+	return def, false
 }
 
-// String attempts asserting answer as a string.
-// The first return value is the result, and the second indicates if the operation was successful.
-// If not successful the first return value will be set to the d parameter.
-func (a *Answer) String(d string) (string, bool) {
-	res, ok := a.value.(string)
-	if ok {
-		return res, ok
+// Int attempts to retrieve the answer as int64.
+func (a *Answer) Int(def int64) (int64, bool) {
+	if a.value == nil {
+		return def, false
 	}
-	return d, false
-}
-
-// Bool attempts asserting answer as a bool.
-// The first return value is the result, and the second indicates if the operation was successful.
-// If not successful the first return value will be set to the d parameter.
-func (a *Answer) Bool(d bool) (bool, bool) {
-	res, ok := a.value.(bool)
-	if ok {
-		return res, ok
-	}
-	return d, false
-}
-
-// Int attempts asserting answer as a int64. Casting from other number types will be done if necessary.
-// The first return value is the result, and the second indicates if the operation was successful.
-// If not successful the first return value will be set to the d parameter.
-func (a *Answer) Int(d int64) (int64, bool) {
-	switch vt := a.value.(type) {
+	switch v := a.value.(type) {
 	case int:
-		return int64(vt), true
+		return int64(v), true
 	case int8:
-		return int64(vt), true
+		return int64(v), true
 	case int16:
-		return int64(vt), true
+		return int64(v), true
 	case int32:
-		return int64(vt), true
+		return int64(v), true
 	case int64:
-		return vt, true
+		return v, true
 	case uint:
-		if vt <= uint(math.MaxInt64) {
-			return int64(vt), true
-		}
+		return int64(v), true
 	case uint8:
-		return int64(vt), true
+		return int64(v), true
 	case uint16:
-		return int64(vt), true
+		return int64(v), true
 	case uint32:
-		return int64(vt), true
+		return int64(v), true
 	case uint64:
-		if vt <= uint64(math.MaxInt64) {
-			return int64(vt), true
+		if v <= uint64(^uint64(0)>>1) {
+			return int64(v), true
 		}
 	case float32:
-		if vt >= float32(math.MinInt64) && vt <= float32(math.MaxInt64) {
-			return int64(vt), true
-		}
+		return int64(v), true
 	case float64:
-		if vt >= float64(math.MinInt64) && vt <= float64(math.MaxInt64) {
-			return int64(vt), true
+		return int64(v), true
+	default:
+		val := reflect.ValueOf(a.value)
+		if val.Kind() >= reflect.Int && val.Kind() <= reflect.Int64 {
+			return val.Int(), true
 		}
-	}
-	return d, false
-}
-
-// Uint attempts asserting answer as a uint64. Casting from other number types will be done if necessary.
-// The first return value is the result, and the second indicates if the operation was successful.
-// If not successful the first return value will be set to the d parameter.
-func (a *Answer) Uint(d uint64) (uint64, bool) {
-	switch vt := a.value.(type) {
-	case int:
-		if vt >= 0 {
-			return uint64(vt), true
-		}
-	case int8:
-		if vt >= 0 {
-			return uint64(vt), true
-		}
-	case int16:
-		if vt >= 0 {
-			return uint64(vt), true
-		}
-	case int32:
-		if vt >= 0 {
-			return uint64(vt), true
-		}
-	case int64:
-		if vt >= 0 {
-			return uint64(vt), true
-		}
-	case uint:
-		return uint64(vt), true
-	case uint8:
-		return uint64(vt), true
-	case uint16:
-		return uint64(vt), true
-	case uint32:
-		return uint64(vt), true
-	case uint64:
-		return vt, true
-	case float32:
-		if vt >= 0 {
-			if vt > float32(math.MaxUint64) {
-				return math.MaxUint64, true
+		if val.Kind() >= reflect.Uint && val.Kind() <= reflect.Uint64 {
+			u := val.Uint()
+			if u <= uint64(^uint64(0)>>1) {
+				return int64(u), true
 			}
-			return uint64(vt), true
 		}
-	case float64:
-		if vt >= 0 {
-			if vt > float64(math.MaxUint64) {
-				return math.MaxUint64, true
-			}
-			return uint64(vt), true
+		if val.Kind() == reflect.Float32 || val.Kind() == reflect.Float64 {
+			return int64(val.Float()), true
 		}
 	}
-	return d, false
+	return def, false
 }
 
-// Float attempts asserting answer as a float64. Casting from other number types will be done if necessary.
-// The first return value is the result, and the second indicates if the operation was successful.
-// If not successful the first return value will be set to the d parameter.
-func (a *Answer) Float(d float64) (float64, bool) {
-	switch vt := a.value.(type) {
-	case int:
-		return float64(vt), true
-	case int8:
-		return float64(vt), true
-	case int16:
-		return float64(vt), true
-	case int32:
-		return float64(vt), true
-	case int64:
-		return float64(vt), true
-	case uint:
-		return float64(vt), true
-	case uint8:
-		return float64(vt), true
-	case uint16:
-		return float64(vt), true
-	case uint32:
-		return float64(vt), true
-	case uint64:
-		return float64(vt), true
-	case float32:
-		return float64(vt), true
-	case float64:
-		return vt, true
+// Uint attempts to retrieve the answer as uint64.
+func (a *Answer) Uint(def uint64) (uint64, bool) {
+	if a.value == nil {
+		return def, false
 	}
-	return d, false
+	switch v := a.value.(type) {
+	case int:
+		if v >= 0 {
+			return uint64(v), true
+		}
+	case int8:
+		if v >= 0 {
+			return uint64(v), true
+		}
+	case int16:
+		if v >= 0 {
+			return uint64(v), true
+		}
+	case int32:
+		if v >= 0 {
+			return uint64(v), true
+		}
+	case int64:
+		if v >= 0 {
+			return uint64(v), true
+		}
+	case uint:
+		return uint64(v), true
+	case uint8:
+		return uint64(v), true
+	case uint16:
+		return uint64(v), true
+	case uint32:
+		return uint64(v), true
+	case uint64:
+		return v, true
+	case float32:
+		if v >= 0 {
+			return uint64(v), true
+		}
+	case float64:
+		if v >= 0 {
+			return uint64(v), true
+		}
+	default:
+		val := reflect.ValueOf(a.value)
+		if val.Kind() >= reflect.Int && val.Kind() <= reflect.Int64 {
+			i := val.Int()
+			if i >= 0 {
+				return uint64(i), true
+			}
+		}
+		if val.Kind() >= reflect.Uint && val.Kind() <= reflect.Uint64 {
+			return val.Uint(), true
+		}
+		if val.Kind() == reflect.Float32 || val.Kind() == reflect.Float64 {
+			f := val.Float()
+			if f >= 0 {
+				return uint64(f), true
+			}
+		}
+	}
+	return def, false
+}
+
+// Float attempts to retrieve the answer as float64.
+func (a *Answer) Float(def float64) (float64, bool) {
+	if a.value == nil {
+		return def, false
+	}
+	switch v := a.value.(type) {
+	case int:
+		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint8:
+		return float64(v), true
+	case uint16:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	case float32:
+		return float64(v), true
+	case float64:
+		return v, true
+	default:
+		val := reflect.ValueOf(a.value)
+		if val.Kind() >= reflect.Int && val.Kind() <= reflect.Int64 {
+			return float64(val.Int()), true
+		}
+		if val.Kind() >= reflect.Uint && val.Kind() <= reflect.Uint64 {
+			return float64(val.Uint()), true
+		}
+		if val.Kind() == reflect.Float32 || val.Kind() == reflect.Float64 {
+			return val.Float(), true
+		}
+	}
+	return def, false
+}
+
+// Slice attempts to retrieve the answer as []interface{}.
+func (a *Answer) Slice(def []interface{}) ([]interface{}, bool) {
+	if a.value == nil {
+		return def, false
+	}
+	if s, ok := a.value.([]interface{}); ok {
+		return s, true
+	}
+	val := reflect.ValueOf(a.value)
+	if val.Kind() == reflect.Slice || val.Kind() == reflect.Array {
+		length := val.Len()
+		result := make([]interface{}, length)
+		for i := 0; i < length; i++ {
+			result[i] = val.Index(i).Interface()
+		}
+		return result, true
+	}
+	return def, false
+}
+
+// Map attempts to retrieve the answer as map[string]interface{}.
+func (a *Answer) Map(def map[string]interface{}) (map[string]interface{}, bool) {
+	if a.value == nil {
+		return def, false
+	}
+	if m, ok := a.value.(map[string]interface{}); ok {
+		return m, true
+	}
+	val := reflect.ValueOf(a.value)
+	if val.Kind() == reflect.Map {
+		result := make(map[string]interface{})
+		iter := val.MapRange()
+		for iter.Next() {
+			k := iter.Key()
+			v := iter.Value()
+			var key string
+			if k.Kind() == reflect.String {
+				key = k.String()
+			} else if k.CanInterface() {
+				if ks, ok := k.Interface().(string); ok {
+					key = ks
+				} else {
+					continue // skip non-string keys
+				}
+			} else {
+				continue
+			}
+			result[key] = v.Interface()
+		}
+		return result, true
+	}
+	return def, false
+}
+
+func tokenizePath(path string) []string {
+	tokens := make([]string, 0, 8) // Preallocate with expected capacity
+	i := 0
+	n := len(path)
+	for i < n {
+		switch path[i] {
+		case '.':
+			i++
+		case '[':
+			i++ // skip '['
+			// Skip leading spaces
+			for i < n && path[i] == ' ' {
+				i++
+			}
+			start := i
+			for i < n && path[i] != ']' {
+				i++
+			}
+			end := i
+			// Trim trailing spaces
+			for end > start && path[end-1] == ' ' {
+				end--
+			}
+			if start < end {
+				token := path[start:end]
+				tokens = append(tokens, token)
+			}
+			if i < n && path[i] == ']' {
+				i++ // skip ']'
+			}
+		default:
+			start := i
+			for i < n && path[i] != '.' && path[i] != '[' {
+				i++
+			}
+			end := i
+			// Trim trailing spaces
+			for end > start && path[end-1] == ' ' {
+				end--
+			}
+			// Trim leading spaces
+			for start < end && path[start] == ' ' {
+				start++
+			}
+			if start < end {
+				token := path[start:end]
+				tokens = append(tokens, token)
+			}
+		}
+	}
+	return tokens
 }
